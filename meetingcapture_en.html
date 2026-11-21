@@ -1,0 +1,1315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meeting Capture Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
+    <style>
+        .recording-pulse { animation: pulse 1.5s ease-in-out infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .drop-zone { border: 2px dashed #d1d5db; transition: all 0.2s; }
+        .drop-zone.drag-over { border-color: #3b82f6; background-color: #eff6ff; }
+        audio::-webkit-media-controls-panel { background: #f3f4f6; }
+        .mic-on { background-color: #16a34a; }
+        .mic-on:hover { background-color: #15803d; }
+        .mic-off { background-color: #dc2626; }
+        .mic-off:hover { background-color: #b91c1c; }
+        .meter-track { background: #1f2937; border-radius: 4px; overflow: hidden; position: relative; }
+        .meter-fill { height: 100%; border-radius: 4px; transition: width 80ms linear; position: relative; }
+        .meter-fill.system { background: linear-gradient(90deg, #22c55e 0%, #22c55e 60%, #eab308 75%, #ef4444 100%); }
+        .meter-fill.mic { background: linear-gradient(90deg, #3b82f6 0%, #3b82f6 60%, #eab308 75%, #ef4444 100%); }
+        .meter-peak { position: absolute; top: 0; width: 2px; height: 100%; background: #fff; border-radius: 1px; opacity: 0.8; transition: left 120ms ease-out; }
+        .meter-ticks { display: flex; justify-content: space-between; padding: 0 1px; }
+        .meter-ticks span { font-size: 9px; color: #6b7280; font-family: monospace; }
+        .level-badge { font-size: 11px; font-family: monospace; min-width: 48px; text-align: right; }
+        .no-signal-blink { animation: blink 1s step-end infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+        /* Schedule styles */
+        .schedule-active { border-color: #8b5cf6; box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15); }
+        .countdown-ring {
+            animation: ring-pulse 2s ease-in-out infinite;
+        }
+        @keyframes ring-pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4); }
+            50% { box-shadow: 0 0 0 10px rgba(139, 92, 246, 0); }
+        }
+        .schedule-countdown-text {
+            font-variant-numeric: tabular-nums;
+        }
+        .quick-btn { transition: all 0.15s; }
+        .quick-btn:hover { transform: translateY(-1px); }
+        .quick-btn:active { transform: translateY(0); }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+    <div class="max-w-5xl mx-auto p-4 sm:p-6 space-y-6">
+
+        <!-- Header -->
+        <header class="text-center">
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">📹 Meeting Capture Tool</h1>
+            <p class="text-gray-500 mt-1">Screen capture, recording &amp; audio extraction — all in-browser</p>
+        </header>
+
+        <!-- Scheduled Recording Banner (shown when a schedule is active) -->
+        <section id="scheduleBanner" class="hidden">
+            <div class="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-xl shadow-lg p-5 text-white">
+                <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div class="flex items-center gap-4">
+                        <div class="w-14 h-14 rounded-full bg-white bg-opacity-20 flex items-center justify-center countdown-ring shrink-0">
+                            <span class="text-2xl">⏰</span>
+                        </div>
+                        <div>
+                            <p class="font-semibold text-lg">Scheduled Recording</p>
+                            <p class="text-purple-100 text-sm" id="scheduleTargetLabel">Starting at --:--:--</p>
+                        </div>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-xs uppercase tracking-wider text-purple-200 mb-1">Starts in</p>
+                        <p id="scheduleCountdown" class="text-3xl sm:text-4xl font-bold font-mono schedule-countdown-text">00:00:00</p>
+                    </div>
+                    <button onclick="cancelSchedule()" class="px-4 py-2 bg-white bg-opacity-20 hover:bg-opacity-30 rounded-lg text-sm font-medium transition shrink-0">✖ Cancel</button>
+                </div>
+                <!-- Progress bar to scheduled time -->
+                <div class="mt-4 w-full bg-white bg-opacity-20 rounded-full h-1.5 overflow-hidden">
+                    <div id="scheduleProgressBar" class="bg-white h-1.5 rounded-full transition-all duration-1000" style="width: 0%"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Settings & Controls -->
+        <section class="bg-white rounded-xl shadow-sm p-5 space-y-4">
+            <h2 class="text-lg font-semibold">Recording Settings</h2>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-sm font-medium mb-1">Format</label>
+                    <select id="formatSelect" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-300 outline-none"></select>
+                    <p id="formatNote" class="text-xs text-amber-600 mt-1 hidden"></p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-1">Quality</label>
+                    <select id="qualitySelect" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-300 outline-none">
+                        <option value="8000000">High (8 Mbps)</option>
+                        <option value="4000000" selected>Medium (4 Mbps)</option>
+                        <option value="2000000">Low (2 Mbps)</option>
+                    </select>
+                </div>
+                <div class="space-y-2 pt-1">
+                    <label class="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="checkbox" id="systemAudio" checked class="rounded accent-blue-600">
+                        Capture system audio
+                    </label>
+                    <label class="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="checkbox" id="micAudio" class="rounded accent-blue-600">
+                        Include microphone
+                    </label>
+                </div>
+            </div>
+
+            <!-- Schedule Section -->
+            <div id="scheduleSection" class="border rounded-lg p-4 space-y-3 bg-gray-50 transition-all">
+                <div class="flex items-center justify-between">
+                    <label class="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                        <input type="checkbox" id="enableSchedule" onchange="toggleScheduleUI()" class="rounded accent-purple-600">
+                        ⏰ Schedule Recording Start
+                    </label>
+                    <span id="scheduleModeBadge" class="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-200 text-gray-500">Off</span>
+                </div>
+
+                <div id="scheduleOptions" class="hidden space-y-3">
+                    <!-- Mode Tabs -->
+                    <div class="flex gap-1 bg-gray-200 rounded-lg p-0.5">
+                        <button id="tabAbsolute" onclick="switchScheduleMode('absolute')" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-white shadow text-purple-700 transition">Specific Time</button>
+                        <button id="tabRelative" onclick="switchScheduleMode('relative')" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md text-gray-500 hover:text-gray-700 transition">Delay / Timer</button>
+                    </div>
+
+                    <!-- Absolute Time -->
+                    <div id="absoluteMode" class="space-y-2">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 mb-1">Date</label>
+                                <input type="date" id="scheduleDate" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 mb-1">Time</label>
+                                <input type="time" id="scheduleTime" step="1" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Relative Delay -->
+                    <div id="relativeMode" class="hidden space-y-2">
+                        <div class="grid grid-cols-3 gap-3">
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 mb-1">Hours</label>
+                                <input type="number" id="delayHours" value="0" min="0" max="23" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none text-center">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 mb-1">Minutes</label>
+                                <input type="number" id="delayMinutes" value="5" min="0" max="59" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none text-center">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 mb-1">Seconds</label>
+                                <input type="number" id="delaySeconds" value="0" min="0" max="59" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none text-center">
+                            </div>
+                        </div>
+                        <!-- Quick Presets -->
+                        <div class="flex flex-wrap gap-2">
+                            <button onclick="setDelay(0,1,0)" class="quick-btn px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium hover:bg-purple-200">1 min</button>
+                            <button onclick="setDelay(0,5,0)" class="quick-btn px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium hover:bg-purple-200">5 min</button>
+                            <button onclick="setDelay(0,10,0)" class="quick-btn px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium hover:bg-purple-200">10 min</button>
+                            <button onclick="setDelay(0,15,0)" class="quick-btn px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium hover:bg-purple-200">15 min</button>
+                            <button onclick="setDelay(0,30,0)" class="quick-btn px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium hover:bg-purple-200">30 min</button>
+                            <button onclick="setDelay(1,0,0)" class="quick-btn px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium hover:bg-purple-200">1 hour</button>
+                        </div>
+                    </div>
+
+                    <!-- Optional: Auto-stop duration -->
+                    <div class="border-t pt-3 mt-2">
+                        <label class="flex items-center gap-2 text-sm cursor-pointer">
+                            <input type="checkbox" id="enableAutoStop" onchange="toggleAutoStop()" class="rounded accent-purple-600">
+                            <span class="text-gray-700">Auto-stop after duration</span>
+                        </label>
+                        <div id="autoStopOptions" class="hidden mt-2 grid grid-cols-3 gap-3">
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 mb-1">Hours</label>
+                                <input type="number" id="autoStopHours" value="1" min="0" max="23" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none text-center">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 mb-1">Minutes</label>
+                                <input type="number" id="autoStopMinutes" value="0" min="0" max="59" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none text-center">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-gray-600 mb-1">Seconds</label>
+                                <input type="number" id="autoStopSeconds" value="0" min="0" max="59" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none text-center">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="flex flex-wrap gap-3 pt-2 items-center">
+                <button id="btnScreenshot" onclick="captureScreenshot()" class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition">📷 Screenshot</button>
+                <button id="btnStartRec" onclick="handleStartRecording()" class="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition">⏺ Start Recording</button>
+                <button id="btnPauseRec" onclick="togglePause()" class="px-4 py-2 bg-yellow-500 text-white rounded-lg text-sm font-medium hover:bg-yellow-600 transition hidden">⏸ Pause</button>
+                <button id="btnStopRec" onclick="stopRecording()" class="px-4 py-2 bg-gray-700 text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition hidden">⏹ Stop</button>
+                <button id="btnMicToggle" onclick="toggleMicLive()" class="px-4 py-2 text-white rounded-lg text-sm font-medium transition hidden mic-on" title="Mute / Unmute microphone">🎙 Mic On</button>
+                <span id="timer" class="hidden items-center gap-2 text-sm font-mono bg-gray-100 px-3 py-2 rounded-lg">
+                    <span class="recording-pulse text-red-500">●</span>
+                    <span id="timerDisplay">00:00:00</span>
+                    <span id="autoStopLabel" class="hidden text-xs text-gray-400">/ <span id="autoStopTarget">--:--:--</span></span>
+                </span>
+            </div>
+        </section>
+
+        <!-- Preview & Volume Meters -->
+        <section id="previewSection" class="bg-white rounded-xl shadow-sm p-5 hidden space-y-4">
+            <div class="flex flex-wrap justify-between items-center gap-2">
+                <h2 class="text-lg font-semibold">Live Preview</h2>
+                <div id="micIndicator" class="hidden items-center gap-1.5 text-sm font-medium px-3 py-1 rounded-full">
+                    <span id="micIndicatorDot" class="w-2 h-2 rounded-full bg-green-500"></span>
+                    <span id="micIndicatorText" class="text-green-700">Mic active</span>
+                </div>
+            </div>
+            <video id="previewVideo" autoplay muted playsinline class="w-full max-h-96 bg-black rounded-lg"></video>
+
+            <!-- Volume Meters Panel -->
+            <div id="volumePanel" class="hidden bg-gray-50 rounded-lg p-4 space-y-3 border">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-sm font-semibold text-gray-700">🔊 Audio Level Monitor</h3>
+                    <span id="audioStatusBadge" class="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-200 text-gray-500">No audio</span>
+                </div>
+                <div id="systemMeterRow" class="hidden space-y-1">
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs font-medium text-gray-600 w-20 shrink-0">🖥 System</span>
+                        <div class="flex-1 meter-track h-5 relative">
+                            <div id="systemMeterFill" class="meter-fill system" style="width: 0%"></div>
+                            <div id="systemMeterPeak" class="meter-peak" style="left: 0%"></div>
+                        </div>
+                        <span id="systemDbLabel" class="level-badge text-gray-400">-∞ dB</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <span class="w-20 shrink-0"></span>
+                        <div class="flex-1 meter-ticks"><span>-60</span><span>-48</span><span>-36</span><span>-24</span><span>-12</span><span>-6</span><span>0</span></div>
+                        <span class="level-badge"></span>
+                    </div>
+                </div>
+                <div id="micMeterRow" class="hidden space-y-1">
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs font-medium text-gray-600 w-20 shrink-0">🎙 Mic</span>
+                        <div class="flex-1 meter-track h-5 relative">
+                            <div id="micMeterFill" class="meter-fill mic" style="width: 0%"></div>
+                            <div id="micMeterPeak" class="meter-peak" style="left: 0%"></div>
+                        </div>
+                        <span id="micDbLabel" class="level-badge text-gray-400">-∞ dB</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <span class="w-20 shrink-0"></span>
+                        <div class="flex-1 meter-ticks"><span>-60</span><span>-48</span><span>-36</span><span>-24</span><span>-12</span><span>-6</span><span>0</span></div>
+                        <span class="level-badge"></span>
+                    </div>
+                </div>
+                <div id="mixedMeterRow" class="hidden space-y-1 pt-2 border-t">
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs font-medium text-gray-600 w-20 shrink-0">📢 Mix Out</span>
+                        <div class="flex-1 meter-track h-5 relative">
+                            <div id="mixedMeterFill" class="meter-fill system" style="width: 0%; background: linear-gradient(90deg, #a855f7 0%, #a855f7 60%, #eab308 75%, #ef4444 100%)"></div>
+                            <div id="mixedMeterPeak" class="meter-peak" style="left: 0%"></div>
+                        </div>
+                        <span id="mixedDbLabel" class="level-badge text-gray-400">-∞ dB</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <span class="w-20 shrink-0"></span>
+                        <div class="flex-1 meter-ticks"><span>-60</span><span>-48</span><span>-36</span><span>-24</span><span>-12</span><span>-6</span><span>0</span></div>
+                        <span class="level-badge"></span>
+                    </div>
+                </div>
+                <div id="signalMessages" class="space-y-1 pt-1"></div>
+            </div>
+        </section>
+
+        <!-- Audio Extraction -->
+        <section class="bg-white rounded-xl shadow-sm p-5 space-y-4">
+            <h2 class="text-lg font-semibold">🎵 Audio Extraction</h2>
+            <div class="flex gap-1 border-b">
+                <button id="tabSession" onclick="switchExtractTab('session')" class="px-4 py-2 text-sm font-medium border-b-2 border-blue-500 text-blue-600 transition">Session Recordings</button>
+                <button id="tabUpload" onclick="switchExtractTab('upload')" class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition">Upload File</button>
+            </div>
+            <div id="sourceSession">
+                <select id="recordingSelect" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none">
+                    <option value="">-- No recordings yet --</option>
+                </select>
+            </div>
+            <div id="sourceUpload" class="hidden">
+                <div id="dropZone" class="drop-zone rounded-lg p-8 text-center cursor-pointer" onclick="document.getElementById('fileInput').click()">
+                    <p class="text-gray-500 text-lg">📁 Drop a video file here or click to browse</p>
+                    <p class="text-xs text-gray-400 mt-1">WebM, MP4, OGG, MKV supported</p>
+                    <input type="file" id="fileInput" accept="video/*,audio/*" class="hidden" onchange="handleFileUpload(event)">
+                </div>
+                <p id="uploadedFileName" class="text-sm text-green-600 mt-2 hidden"></p>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-sm font-medium mb-1">Output Format</label>
+                    <select id="audioFormat" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none">
+                        <option value="wav">WAV (PCM 16-bit)</option>
+                        <option value="mp3">MP3 (MPEG Layer 3)</option>
+                        <option value="webm">WebM Audio (Opus)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-1">Sample Rate</label>
+                    <select id="sampleRate" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none">
+                        <option value="48000">48 kHz (Standard)</option>
+                        <option value="44100">44.1 kHz (CD Quality)</option>
+                        <option value="22050">22.05 kHz (Low)</option>
+                        <option value="16000">16 kHz (Speech)</option>
+                    </select>
+                </div>
+                <div id="mp3BitrateContainer" class="hidden">
+                    <label class="block text-sm font-medium mb-1">MP3 Bitrate</label>
+                    <select id="mp3Bitrate" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-purple-300 outline-none">
+                        <option value="320">320 kbps (High)</option>
+                        <option value="192">192 kbps (Good)</option>
+                        <option value="128" selected>128 kbps (Standard)</option>
+                        <option value="64">64 kbps (Low / Speech)</option>
+                    </select>
+                </div>
+            </div>
+            <button id="btnExtract" onclick="extractAudio()" class="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 transition">🎶 Extract Audio Track</button>
+            <div id="extractProgress" class="hidden space-y-2">
+                <div class="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
+                    <div id="progressBar" class="bg-purple-600 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <p id="extractStatus" class="text-sm text-gray-500"></p>
+            </div>
+            <div id="extractResult" class="hidden space-y-3">
+                <canvas id="waveformCanvas" class="w-full h-24 bg-gray-900 rounded-lg"></canvas>
+                <audio id="audioPreview" controls class="w-full"></audio>
+                <button id="btnDownloadAudio" onclick="downloadExtractedAudio()" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition">⬇ Download Audio</button>
+            </div>
+        </section>
+
+        <!-- Captures Gallery -->
+        <section class="bg-white rounded-xl shadow-sm p-5 space-y-4">
+            <div class="flex flex-wrap justify-between items-center gap-2">
+                <h2 class="text-lg font-semibold">📁 Captures (<span id="captureCount">0</span>)</h2>
+                <div class="flex gap-2">
+                    <button onclick="downloadAll()" class="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 transition">⬇ Download All</button>
+                    <button onclick="clearAll()" class="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 transition">🗑 Clear All</button>
+                </div>
+            </div>
+            <div id="capturesGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <p id="emptyMessage" class="text-gray-400 text-sm col-span-full text-center py-8">No captures yet. Take a screenshot or start recording.</p>
+            </div>
+        </section>
+
+        <!-- Extraction History -->
+        <section id="extractionHistory" class="bg-white rounded-xl shadow-sm p-5 space-y-4 hidden">
+            <h2 class="text-lg font-semibold">🎧 Extraction History</h2>
+            <div id="extractionList" class="space-y-3"></div>
+        </section>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="event.target===this&&closeModal()">
+        <div class="bg-white rounded-xl p-6 max-w-sm mx-4 text-center space-y-4 shadow-xl">
+            <p id="modalMessage" class="text-gray-700"></p>
+            <button onclick="closeModal()" class="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition">OK</button>
+        </div>
+    </div>
+
+    <!-- Notification Sound (for schedule) -->
+    <script>
+        // ======================== STATE ========================
+        let captures = [];
+        let extractionItems = [];
+        let mediaRecorder = null;
+        let displayStream = null;
+        let micStream = null;
+        let audioMixCtx = null;
+        let micGainNode = null;
+        let recordedChunks = [];
+        let isRecording = false;
+        let isPaused = false;
+        let isMicMuted = false;
+        let isMicActive = false;
+        let isSystemAudioActive = false;
+        let recordingStartTime = 0;
+        let pausedTime = 0;
+        let pauseStartTime = 0;
+        let timerInterval = null;
+        let currentExtractedBlob = null;
+        let currentExtractedFormat = '';
+        let currentExtractedName = '';
+        let uploadedFile = null;
+        let availableFormats = [];
+
+        // Volume metering
+        let systemAnalyser = null;
+        let micAnalyser = null;
+        let mixedAnalyser = null;
+        let meterAnimFrame = null;
+        let systemPeakHold = 0, micPeakHold = 0, mixedPeakHold = 0;
+        let systemPeakDecay = 0, micPeakDecay = 0, mixedPeakDecay = 0;
+        let systemPeakTime = 0, micPeakTime = 0, mixedPeakTime = 0;
+        const PEAK_HOLD_TIME = 1500;
+        const PEAK_DECAY_RATE = 0.4;
+
+        // Schedule state
+        let scheduleActive = false;
+        let scheduleTargetTime = null;
+        let scheduleCreatedTime = null;
+        let scheduleCountdownInterval = null;
+        let autoStopTimeout = null;
+        let autoStopDurationMs = 0;
+        let scheduleMode = 'absolute'; // 'absolute' or 'relative'
+
+        // ======================== INIT ========================
+        (function init() {
+            detectFormats();
+            setupDropZone();
+            prefillScheduleDate();
+            document.getElementById('audioFormat').addEventListener('change', function () {
+                document.getElementById('mp3BitrateContainer').classList.toggle('hidden', this.value !== 'mp3');
+            });
+        })();
+
+        function prefillScheduleDate() {
+            const now = new Date();
+            const dateStr = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+            document.getElementById('scheduleDate').value = dateStr;
+            // Default time: next round 5 minutes
+            const mins = now.getMinutes();
+            const nextRound = Math.ceil((mins + 1) / 5) * 5;
+            const target = new Date(now);
+            target.setMinutes(nextRound, 0, 0);
+            if (target <= now) target.setMinutes(target.getMinutes() + 5);
+            document.getElementById('scheduleTime').value = pad(target.getHours()) + ':' + pad(target.getMinutes()) + ':00';
+        }
+
+        function detectFormats() {
+            const select = document.getElementById('formatSelect');
+            const note = document.getElementById('formatNote');
+            availableFormats = [];
+            if (typeof MediaRecorder === 'undefined') {
+                availableFormats.push({ label: 'Default', mime: '', ext: 'webm' });
+                select.innerHTML = '<option value="0">Default</option>';
+                note.textContent = 'MediaRecorder API not available.';
+                note.classList.remove('hidden');
+                return;
+            }
+            const groups = {
+                webm: [
+                    { label: 'WebM (VP9 + Opus)', mime: 'video/webm;codecs=vp9,opus', ext: 'webm' },
+                    { label: 'WebM (VP8 + Opus)', mime: 'video/webm;codecs=vp8,opus', ext: 'webm' },
+                    { label: 'WebM', mime: 'video/webm', ext: 'webm' },
+                ],
+                mp4: [
+                    { label: 'MP4 (H.264 + AAC)', mime: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', ext: 'mp4' },
+                    { label: 'MP4 (H.264)', mime: 'video/mp4;codecs=avc1.42E01E', ext: 'mp4' },
+                    { label: 'MP4', mime: 'video/mp4', ext: 'mp4' },
+                ]
+            };
+            for (const group of Object.values(groups)) {
+                for (const fmt of group) {
+                    if (MediaRecorder.isTypeSupported(fmt.mime)) { availableFormats.push(fmt); break; }
+                }
+            }
+            if (availableFormats.length === 0) availableFormats.push({ label: 'Default', mime: '', ext: 'webm' });
+            select.innerHTML = '';
+            availableFormats.forEach((fmt, i) => {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.textContent = fmt.label;
+                select.appendChild(opt);
+            });
+            const hasMp4 = availableFormats.some(f => f.ext === 'mp4');
+            if (!hasMp4) { note.textContent = 'MP4 not available. Use Chrome/Edge 125+ or Safari.'; note.classList.remove('hidden'); }
+            else { note.classList.add('hidden'); }
+        }
+
+        // ======================== SCHEDULE UI ========================
+        function toggleScheduleUI() {
+            const enabled = document.getElementById('enableSchedule').checked;
+            document.getElementById('scheduleOptions').classList.toggle('hidden', !enabled);
+            const badge = document.getElementById('scheduleModeBadge');
+            const section = document.getElementById('scheduleSection');
+            if (enabled) {
+                badge.textContent = 'Enabled';
+                badge.className = 'text-xs font-medium px-2 py-0.5 rounded-full bg-purple-100 text-purple-700';
+                section.classList.add('schedule-active');
+                // Update button text
+                document.getElementById('btnStartRec').textContent = '⏰ Schedule Recording';
+                document.getElementById('btnStartRec').classList.remove('bg-red-600', 'hover:bg-red-700');
+                document.getElementById('btnStartRec').classList.add('bg-purple-600', 'hover:bg-purple-700');
+            } else {
+                badge.textContent = 'Off';
+                badge.className = 'text-xs font-medium px-2 py-0.5 rounded-full bg-gray-200 text-gray-500';
+                section.classList.remove('schedule-active');
+                document.getElementById('btnStartRec').textContent = '⏺ Start Recording';
+                document.getElementById('btnStartRec').classList.add('bg-red-600', 'hover:bg-red-700');
+                document.getElementById('btnStartRec').classList.remove('bg-purple-600', 'hover:bg-purple-700');
+            }
+        }
+
+        function switchScheduleMode(mode) {
+            scheduleMode = mode;
+            document.getElementById('absoluteMode').classList.toggle('hidden', mode !== 'absolute');
+            document.getElementById('relativeMode').classList.toggle('hidden', mode !== 'relative');
+            document.getElementById('tabAbsolute').className = 'flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition ' +
+                (mode === 'absolute' ? 'bg-white shadow text-purple-700' : 'text-gray-500 hover:text-gray-700');
+            document.getElementById('tabRelative').className = 'flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition ' +
+                (mode === 'relative' ? 'bg-white shadow text-purple-700' : 'text-gray-500 hover:text-gray-700');
+        }
+
+        function setDelay(h, m, s) {
+            document.getElementById('delayHours').value = h;
+            document.getElementById('delayMinutes').value = m;
+            document.getElementById('delaySeconds').value = s;
+        }
+
+        function toggleAutoStop() {
+            document.getElementById('autoStopOptions').classList.toggle('hidden', !document.getElementById('enableAutoStop').checked);
+        }
+
+        // ======================== SCHEDULE LOGIC ========================
+        function handleStartRecording() {
+            const scheduleEnabled = document.getElementById('enableSchedule').checked;
+
+            if (scheduleEnabled && !scheduleActive) {
+                // Calculate target time
+                let targetTime;
+
+                if (scheduleMode === 'absolute') {
+                    const dateVal = document.getElementById('scheduleDate').value;
+                    const timeVal = document.getElementById('scheduleTime').value;
+                    if (!dateVal || !timeVal) { showModal('Please set both date and time for the scheduled recording.'); return; }
+                    targetTime = new Date(dateVal + 'T' + timeVal);
+                    if (isNaN(targetTime.getTime())) { showModal('Invalid date or time.'); return; }
+                    if (targetTime <= new Date()) { showModal('The scheduled time must be in the future. Please select a later time.'); return; }
+                } else {
+                    const h = parseInt(document.getElementById('delayHours').value) || 0;
+                    const m = parseInt(document.getElementById('delayMinutes').value) || 0;
+                    const s = parseInt(document.getElementById('delaySeconds').value) || 0;
+                    const totalMs = (h * 3600 + m * 60 + s) * 1000;
+                    if (totalMs <= 0) { showModal('Please set a delay greater than 0.'); return; }
+                    targetTime = new Date(Date.now() + totalMs);
+                }
+
+                // Start schedule
+                scheduleActive = true;
+                scheduleTargetTime = targetTime;
+                scheduleCreatedTime = new Date();
+
+                // Format target label
+                const tStr = pad(targetTime.getHours()) + ':' + pad(targetTime.getMinutes()) + ':' + pad(targetTime.getSeconds());
+                const dStr = targetTime.toLocaleDateString();
+                document.getElementById('scheduleTargetLabel').textContent = 'Starting at ' + tStr + ' on ' + dStr;
+
+                // Show banner
+                document.getElementById('scheduleBanner').classList.remove('hidden');
+
+                // Disable start button & settings
+                document.getElementById('btnStartRec').classList.add('hidden');
+                document.getElementById('btnScreenshot').classList.add('opacity-50', 'pointer-events-none');
+
+                // Play notification beep
+                playBeep(600, 0.1, 0.15);
+                setTimeout(() => playBeep(800, 0.1, 0.15), 200);
+
+                // Start countdown
+                updateScheduleCountdown();
+                scheduleCountdownInterval = setInterval(updateScheduleCountdown, 250);
+
+                return;
+            }
+
+            // Normal start
+            startRecording();
+        }
+
+        function updateScheduleCountdown() {
+            if (!scheduleActive || !scheduleTargetTime) return;
+
+            const now = Date.now();
+            const remaining = scheduleTargetTime.getTime() - now;
+
+            if (remaining <= 0) {
+                // Time's up! Start recording
+                clearInterval(scheduleCountdownInterval);
+                scheduleCountdownInterval = null;
+                document.getElementById('scheduleCountdown').textContent = '00:00:00';
+                document.getElementById('scheduleProgressBar').style.width = '100%';
+
+                // Play start beeps
+                playBeep(880, 0.15, 0.2);
+                setTimeout(() => playBeep(880, 0.15, 0.2), 250);
+                setTimeout(() => playBeep(1200, 0.2, 0.3), 500);
+
+                // Short delay then start
+                setTimeout(() => {
+                    document.getElementById('scheduleBanner').classList.add('hidden');
+                    scheduleActive = false;
+                    // Restore UI before starting
+                    document.getElementById('btnStartRec').classList.remove('hidden');
+                    document.getElementById('btnScreenshot').classList.remove('opacity-50', 'pointer-events-none');
+                    startRecording();
+                }, 800);
+                return;
+            }
+
+            // Update countdown display
+            const totalSec = Math.ceil(remaining / 1000);
+            const h = Math.floor(totalSec / 3600);
+            const m = Math.floor((totalSec % 3600) / 60);
+            const s = totalSec % 60;
+            document.getElementById('scheduleCountdown').textContent = pad(h) + ':' + pad(m) + ':' + pad(s);
+
+            // Update progress bar
+            const totalDuration = scheduleTargetTime.getTime() - scheduleCreatedTime.getTime();
+            const elapsed = now - scheduleCreatedTime.getTime();
+            const pct = Math.min(100, Math.max(0, (elapsed / totalDuration) * 100));
+            document.getElementById('scheduleProgressBar').style.width = pct.toFixed(1) + '%';
+
+            // Beep when close (last 5 seconds)
+            if (totalSec <= 5 && totalSec > 0) {
+                playBeep(660, 0.05, 0.1);
+            }
+        }
+
+        function cancelSchedule() {
+            scheduleActive = false;
+            scheduleTargetTime = null;
+            scheduleCreatedTime = null;
+            if (scheduleCountdownInterval) { clearInterval(scheduleCountdownInterval); scheduleCountdownInterval = null; }
+
+            document.getElementById('scheduleBanner').classList.add('hidden');
+            document.getElementById('btnStartRec').classList.remove('hidden');
+            document.getElementById('btnScreenshot').classList.remove('opacity-50', 'pointer-events-none');
+
+            showModal('Scheduled recording has been cancelled.');
+        }
+
+        function playBeep(freq, duration, volume) {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.frequency.value = freq;
+                osc.type = 'sine';
+                gain.gain.setValueAtTime(volume || 0.1, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + duration);
+                setTimeout(() => ctx.close(), (duration + 0.5) * 1000);
+            } catch (e) { /* silent fail */ }
+        }
+
+        // ======================== SCREENSHOT ========================
+        async function captureScreenshot() {
+            try {
+                const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+                const video = document.createElement('video');
+                video.srcObject = stream;
+                video.muted = true;
+                await video.play();
+                await new Promise(r => requestAnimationFrame(r));
+                await new Promise(r => requestAnimationFrame(r));
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+                stream.getTracks().forEach(t => t.stop());
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                addCapture('screenshot', blob, 'png');
+                showModal('Screenshot captured!');
+            } catch (err) {
+                if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') showModal('Screenshot failed: ' + err.message);
+            }
+        }
+
+        // ======================== RECORDING ========================
+        async function startRecording() {
+            try {
+                const formatIdx = parseInt(document.getElementById('formatSelect').value);
+                const format = availableFormats[formatIdx];
+                const quality = parseInt(document.getElementById('qualitySelect').value);
+                const wantSystemAudio = document.getElementById('systemAudio').checked;
+                const wantMic = document.getElementById('micAudio').checked;
+
+                displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: wantSystemAudio });
+
+                let finalStream = displayStream;
+                const displayAudioTracks = displayStream.getAudioTracks();
+                isMicActive = false;
+                isSystemAudioActive = displayAudioTracks.length > 0;
+                micGainNode = null;
+                systemAnalyser = null; micAnalyser = null; mixedAnalyser = null;
+
+                if (wantMic) {
+                    try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); isMicActive = true; }
+                    catch (e) { console.warn('Mic denied:', e); }
+                }
+
+                if (isSystemAudioActive || micStream) {
+                    audioMixCtx = new AudioContext();
+                    const dest = audioMixCtx.createMediaStreamDestination();
+                    if (isSystemAudioActive) {
+                        const src = audioMixCtx.createMediaStreamSource(new MediaStream(displayAudioTracks));
+                        systemAnalyser = audioMixCtx.createAnalyser(); systemAnalyser.fftSize = 2048; systemAnalyser.smoothingTimeConstant = 0.5;
+                        src.connect(systemAnalyser); systemAnalyser.connect(dest);
+                    }
+                    if (micStream) {
+                        const micSrc = audioMixCtx.createMediaStreamSource(micStream);
+                        micGainNode = audioMixCtx.createGain(); micGainNode.gain.value = 1.0;
+                        micAnalyser = audioMixCtx.createAnalyser(); micAnalyser.fftSize = 2048; micAnalyser.smoothingTimeConstant = 0.5;
+                        micSrc.connect(micAnalyser); micAnalyser.connect(micGainNode); micGainNode.connect(dest);
+                    }
+                    mixedAnalyser = audioMixCtx.createAnalyser(); mixedAnalyser.fftSize = 2048; mixedAnalyser.smoothingTimeConstant = 0.5;
+                    const mixedSource = audioMixCtx.createMediaStreamSource(dest.stream);
+                    mixedSource.connect(mixedAnalyser);
+                    finalStream = new MediaStream([displayStream.getVideoTracks()[0], ...dest.stream.getAudioTracks()]);
+                }
+
+                const options = { videoBitsPerSecond: quality };
+                if (format.mime) options.mimeType = format.mime;
+                recordedChunks = [];
+                mediaRecorder = new MediaRecorder(finalStream, options);
+                mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+                mediaRecorder.onstop = () => {
+                    const mimeType = mediaRecorder.mimeType || format.mime || 'video/webm';
+                    const blob = new Blob(recordedChunks, { type: mimeType });
+                    const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+                    addCapture('video', blob, ext);
+                    cleanupRecording();
+                    showModal('Recording saved!');
+                };
+                displayStream.getVideoTracks()[0].addEventListener('ended', () => { if (isRecording) stopRecording(); });
+
+                mediaRecorder.start(1000);
+                isRecording = true;
+                isPaused = false;
+                isMicMuted = false;
+                recordingStartTime = Date.now();
+                pausedTime = 0;
+
+                document.getElementById('btnStartRec').classList.add('hidden');
+                document.getElementById('btnScreenshot').classList.add('hidden');
+                document.getElementById('btnPauseRec').classList.remove('hidden');
+                document.getElementById('btnStopRec').classList.remove('hidden');
+                document.getElementById('timer').classList.remove('hidden');
+                document.getElementById('timer').classList.add('flex');
+                document.getElementById('previewSection').classList.remove('hidden');
+                document.getElementById('previewVideo').srcObject = displayStream;
+
+                const btnMic = document.getElementById('btnMicToggle');
+                if (isMicActive) {
+                    btnMic.classList.remove('hidden');
+                    updateMicButtonState();
+                    document.getElementById('micIndicator').classList.remove('hidden');
+                    document.getElementById('micIndicator').classList.add('flex');
+                    updateMicIndicator();
+                } else {
+                    btnMic.classList.add('hidden');
+                    document.getElementById('micIndicator').classList.add('hidden');
+                    document.getElementById('micIndicator').classList.remove('flex');
+                }
+
+                setupVolumeMeterUI();
+                startMeterAnimation();
+                startTimer();
+
+                // Setup auto-stop if enabled
+                setupAutoStop();
+
+            } catch (err) {
+                cleanupRecording();
+                if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') showModal('Recording failed: ' + err.message);
+            }
+        }
+
+        function setupAutoStop() {
+            if (autoStopTimeout) { clearTimeout(autoStopTimeout); autoStopTimeout = null; }
+            const enabled = document.getElementById('enableAutoStop').checked;
+            if (!enabled) {
+                document.getElementById('autoStopLabel').classList.add('hidden');
+                autoStopDurationMs = 0;
+                return;
+            }
+            const h = parseInt(document.getElementById('autoStopHours').value) || 0;
+            const m = parseInt(document.getElementById('autoStopMinutes').value) || 0;
+            const s = parseInt(document.getElementById('autoStopSeconds').value) || 0;
+            autoStopDurationMs = (h * 3600 + m * 60 + s) * 1000;
+            if (autoStopDurationMs <= 0) { document.getElementById('autoStopLabel').classList.add('hidden'); return; }
+
+            document.getElementById('autoStopLabel').classList.remove('hidden');
+            document.getElementById('autoStopTarget').textContent = formatTime(h * 3600 + m * 60 + s);
+
+            autoStopTimeout = setTimeout(() => {
+                if (isRecording) {
+                    playBeep(500, 0.3, 0.2);
+                    setTimeout(() => playBeep(500, 0.3, 0.2), 400);
+                    stopRecording();
+                }
+            }, autoStopDurationMs);
+        }
+
+        function togglePause() {
+            if (!mediaRecorder || !isRecording) return;
+            if (isPaused) {
+                mediaRecorder.resume();
+                isPaused = false;
+                pausedTime += Date.now() - pauseStartTime;
+                document.getElementById('btnPauseRec').textContent = '⏸ Pause';
+                document.getElementById('timer').querySelector('span').classList.add('recording-pulse');
+            } else {
+                mediaRecorder.pause();
+                isPaused = true;
+                pauseStartTime = Date.now();
+                document.getElementById('btnPauseRec').textContent = '▶ Resume';
+                document.getElementById('timer').querySelector('span').classList.remove('recording-pulse');
+            }
+        }
+
+        function toggleMicLive() {
+            if (!isRecording || !isMicActive || !micGainNode) return;
+            isMicMuted = !isMicMuted;
+            const now = audioMixCtx.currentTime;
+            micGainNode.gain.cancelScheduledValues(now);
+            micGainNode.gain.setValueAtTime(micGainNode.gain.value, now);
+            micGainNode.gain.linearRampToValueAtTime(isMicMuted ? 0.0 : 1.0, now + 0.05);
+            updateMicButtonState();
+            updateMicIndicator();
+        }
+
+        function updateMicButtonState() {
+            const btn = document.getElementById('btnMicToggle');
+            if (isMicMuted) {
+                btn.textContent = '🔇 Mic Off';
+                btn.className = 'px-4 py-2 text-white rounded-lg text-sm font-medium transition mic-off';
+            } else {
+                btn.textContent = '🎙 Mic On';
+                btn.className = 'px-4 py-2 text-white rounded-lg text-sm font-medium transition mic-on';
+            }
+        }
+
+        function updateMicIndicator() {
+            const dot = document.getElementById('micIndicatorDot');
+            const text = document.getElementById('micIndicatorText');
+            if (isMicMuted) {
+                dot.className = 'w-2 h-2 rounded-full bg-red-500';
+                text.className = 'text-red-700'; text.textContent = 'Mic muted';
+            } else {
+                dot.className = 'w-2 h-2 rounded-full bg-green-500';
+                text.className = 'text-green-700'; text.textContent = 'Mic active';
+            }
+        }
+
+        // ======================== VOLUME METERING ========================
+        function setupVolumeMeterUI() {
+            const panel = document.getElementById('volumePanel');
+            const hasAny = isSystemAudioActive || isMicActive;
+            panel.classList.toggle('hidden', !hasAny);
+            document.getElementById('systemMeterRow').classList.toggle('hidden', !isSystemAudioActive);
+            document.getElementById('micMeterRow').classList.toggle('hidden', !isMicActive);
+            document.getElementById('mixedMeterRow').classList.toggle('hidden', !(isSystemAudioActive && isMicActive));
+            systemPeakHold = 0; micPeakHold = 0; mixedPeakHold = 0;
+            systemPeakDecay = 0; micPeakDecay = 0; mixedPeakDecay = 0;
+            systemPeakTime = 0; micPeakTime = 0; mixedPeakTime = 0;
+            updateAudioStatusBadge('waiting');
+        }
+
+        function startMeterAnimation() {
+            if (meterAnimFrame) cancelAnimationFrame(meterAnimFrame);
+            const systemDataArr = systemAnalyser ? new Float32Array(systemAnalyser.fftSize) : null;
+            const micDataArr = micAnalyser ? new Float32Array(micAnalyser.fftSize) : null;
+            const mixedDataArr = mixedAnalyser ? new Float32Array(mixedAnalyser.fftSize) : null;
+            let noSignalCounter = 0;
+            let hasEverHadSignal = false;
+            function tick() {
+                if (!isRecording) return;
+                const now = performance.now();
+                let systemDb = -Infinity, micDb = -Infinity, mixedDb = -Infinity;
+                let anySignal = false;
+                if (systemAnalyser && systemDataArr) {
+                    systemAnalyser.getFloatTimeDomainData(systemDataArr);
+                    systemDb = calcRmsDb(systemDataArr);
+                    updateMeter('system', dbToPercent(systemDb), systemDb, now);
+                    if (systemDb > -55) anySignal = true;
+                }
+                if (micAnalyser && micDataArr) {
+                    micAnalyser.getFloatTimeDomainData(micDataArr);
+                    micDb = calcRmsDb(micDataArr);
+                    updateMeter('mic', dbToPercent(micDb), micDb, now);
+                    if (micDb > -55) anySignal = true;
+                }
+                if (mixedAnalyser && mixedDataArr) {
+                    mixedAnalyser.getFloatTimeDomainData(mixedDataArr);
+                    mixedDb = calcRmsDb(mixedDataArr);
+                    updateMeter('mixed', dbToPercent(mixedDb), mixedDb, now);
+                }
+                if (anySignal) {
+                    hasEverHadSignal = true; noSignalCounter = 0;
+                    const maxDb = Math.max(systemDb, micDb);
+                    if (maxDb > -3) updateAudioStatusBadge('clipping');
+                    else if (maxDb > -24) updateAudioStatusBadge('good');
+                    else if (maxDb > -45) updateAudioStatusBadge('low');
+                    else updateAudioStatusBadge('verylow');
+                } else {
+                    noSignalCounter++;
+                    if (noSignalCounter > 120) updateAudioStatusBadge(hasEverHadSignal ? 'silent' : 'nosignal');
+                }
+                updateSignalMessages(systemDb, micDb);
+                meterAnimFrame = requestAnimationFrame(tick);
+            }
+            meterAnimFrame = requestAnimationFrame(tick);
+        }
+
+        function calcRmsDb(arr) {
+            let sum = 0;
+            for (let i = 0; i < arr.length; i++) sum += arr[i] * arr[i];
+            const rms = Math.sqrt(sum / arr.length);
+            return rms < 1e-10 ? -Infinity : 20 * Math.log10(rms);
+        }
+
+        function dbToPercent(db) {
+            if (db <= -60) return 0;
+            if (db >= 0) return 100;
+            return ((db + 60) / 60) * 100;
+        }
+
+        function updateMeter(name, pct, db, now) {
+            const fill = document.getElementById(name + 'MeterFill');
+            const peakEl = document.getElementById(name + 'MeterPeak');
+            const label = document.getElementById(name + 'DbLabel');
+            if (!fill) return;
+            fill.style.width = Math.max(0, Math.min(100, pct)).toFixed(1) + '%';
+            let peakHold, peakTime, peakDecay;
+            if (name === 'system') { peakHold = systemPeakHold; peakTime = systemPeakTime; peakDecay = systemPeakDecay; }
+            else if (name === 'mic') { peakHold = micPeakHold; peakTime = micPeakTime; peakDecay = micPeakDecay; }
+            else { peakHold = mixedPeakHold; peakTime = mixedPeakTime; peakDecay = mixedPeakDecay; }
+            if (pct >= peakHold) { peakHold = pct; peakTime = now; peakDecay = pct; }
+            else if (now - peakTime > PEAK_HOLD_TIME) { peakDecay = Math.max(0, peakDecay - PEAK_DECAY_RATE); peakHold = peakDecay; if (peakHold <= 0) peakTime = now; }
+            if (name === 'system') { systemPeakHold = peakHold; systemPeakTime = peakTime; systemPeakDecay = peakDecay; }
+            else if (name === 'mic') { micPeakHold = peakHold; micPeakTime = peakTime; micPeakDecay = peakDecay; }
+            else { mixedPeakHold = peakHold; mixedPeakTime = peakTime; mixedPeakDecay = peakDecay; }
+            peakEl.style.left = Math.max(0, Math.min(100, peakHold)).toFixed(1) + '%';
+            peakEl.style.opacity = peakHold > 0 ? '0.8' : '0';
+            if (db <= -60) { label.textContent = '-∞ dB'; label.className = 'level-badge text-gray-400'; }
+            else {
+                label.textContent = db.toFixed(1) + ' dB';
+                if (db > -3) label.className = 'level-badge text-red-500 font-bold';
+                else if (db > -12) label.className = 'level-badge text-yellow-600';
+                else if (db > -36) label.className = 'level-badge text-green-600';
+                else label.className = 'level-badge text-gray-500';
+            }
+        }
+
+        function updateAudioStatusBadge(state) {
+            const badge = document.getElementById('audioStatusBadge');
+            badge.classList.remove('no-signal-blink');
+            const map = {
+                good: ['✓ Signal OK', 'bg-green-100 text-green-700'],
+                low: ['⚠ Low signal', 'bg-yellow-100 text-yellow-700'],
+                verylow: ['⚠ Very low', 'bg-orange-100 text-orange-700'],
+                clipping: ['🔴 Clipping!', 'bg-red-100 text-red-700'],
+                silent: ['⏸ Silence', 'bg-gray-200 text-gray-600'],
+                nosignal: ['✖ No signal', 'bg-red-100 text-red-600 no-signal-blink'],
+                waiting: ['… Waiting', 'bg-gray-200 text-gray-500']
+            };
+            const [text, cls] = map[state] || map.waiting;
+            badge.textContent = text;
+            badge.className = 'text-xs font-medium px-2 py-0.5 rounded-full ' + cls;
+        }
+
+        function updateSignalMessages(systemDb, micDb) {
+            const el = document.getElementById('signalMessages');
+            const msgs = [];
+            if (isSystemAudioActive && systemDb <= -55) msgs.push({ type: 'warn', text: 'System audio: no signal detected. Make sure the meeting app is producing sound and you shared the correct tab/screen with audio.' });
+            if (isMicActive && !isMicMuted && micDb <= -55) msgs.push({ type: 'warn', text: 'Microphone: no signal. Try speaking or check that the correct mic is selected.' });
+            if (isMicActive && isMicMuted) msgs.push({ type: 'info', text: 'Microphone is muted — mic audio will not be recorded until you unmute.' });
+            if (systemDb > -3 || micDb > -3) msgs.push({ type: 'error', text: 'Audio is clipping! Reduce the volume of the source to avoid distortion.' });
+            el.innerHTML = msgs.map(m => {
+                const color = m.type === 'error' ? 'text-red-600 bg-red-50' : m.type === 'warn' ? 'text-amber-700 bg-amber-50' : 'text-blue-600 bg-blue-50';
+                const icon = m.type === 'error' ? '🔴' : m.type === 'warn' ? '⚠️' : 'ℹ️';
+                return `<p class="text-xs px-2 py-1.5 rounded ${color}">${icon} ${m.text}</p>`;
+            }).join('');
+        }
+
+        function stopMeterAnimation() {
+            if (meterAnimFrame) { cancelAnimationFrame(meterAnimFrame); meterAnimFrame = null; }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+            isRecording = false;
+        }
+
+        function cleanupRecording() {
+            stopMeterAnimation();
+            if (autoStopTimeout) { clearTimeout(autoStopTimeout); autoStopTimeout = null; }
+            if (displayStream) displayStream.getTracks().forEach(t => t.stop());
+            if (micStream) micStream.getTracks().forEach(t => t.stop());
+            if (audioMixCtx) { try { audioMixCtx.close(); } catch (e) { } }
+            displayStream = null; micStream = null; audioMixCtx = null; micGainNode = null;
+            systemAnalyser = null; micAnalyser = null; mixedAnalyser = null;
+            mediaRecorder = null; isRecording = false; isPaused = false; isMicMuted = false;
+            isMicActive = false; isSystemAudioActive = false;
+            clearInterval(timerInterval);
+
+            document.getElementById('btnStartRec').classList.remove('hidden');
+            document.getElementById('btnScreenshot').classList.remove('hidden');
+            document.getElementById('btnScreenshot').classList.remove('opacity-50', 'pointer-events-none');
+            document.getElementById('btnPauseRec').classList.add('hidden');
+            document.getElementById('btnStopRec').classList.add('hidden');
+            document.getElementById('btnMicToggle').classList.add('hidden');
+            document.getElementById('timer').classList.add('hidden');
+            document.getElementById('timer').classList.remove('flex');
+            document.getElementById('previewSection').classList.add('hidden');
+            document.getElementById('previewVideo').srcObject = null;
+            document.getElementById('btnPauseRec').textContent = '⏸ Pause';
+            document.getElementById('micIndicator').classList.add('hidden');
+            document.getElementById('micIndicator').classList.remove('flex');
+            document.getElementById('volumePanel').classList.add('hidden');
+            document.getElementById('signalMessages').innerHTML = '';
+            document.getElementById('autoStopLabel').classList.add('hidden');
+
+            // Restore schedule button state
+            toggleScheduleUI();
+        }
+
+        function startTimer() {
+            clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                const currentPause = isPaused ? (Date.now() - pauseStartTime) : 0;
+                const elapsed = Date.now() - recordingStartTime - pausedTime - currentPause;
+                document.getElementById('timerDisplay').textContent = formatTime(Math.floor(Math.max(0, elapsed) / 1000));
+            }, 500);
+        }
+
+        // ======================== AUDIO EXTRACTION ========================
+        function switchExtractTab(tab) {
+            const isSession = tab === 'session';
+            document.getElementById('tabSession').className = 'px-4 py-2 text-sm font-medium border-b-2 transition ' + (isSession ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700');
+            document.getElementById('tabUpload').className = 'px-4 py-2 text-sm font-medium border-b-2 transition ' + (!isSession ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700');
+            document.getElementById('sourceSession').classList.toggle('hidden', !isSession);
+            document.getElementById('sourceUpload').classList.toggle('hidden', isSession);
+        }
+
+        function setupDropZone() {
+            const dz = document.getElementById('dropZone');
+            dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('drag-over'); });
+            dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+            dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('drag-over'); if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]); });
+        }
+
+        function handleFileUpload(event) { if (event.target.files.length) handleFile(event.target.files[0]); }
+
+        function handleFile(file) {
+            uploadedFile = file;
+            const el = document.getElementById('uploadedFileName');
+            el.textContent = '✓ ' + file.name + ' (' + formatSize(file.size) + ')';
+            el.classList.remove('hidden');
+        }
+
+        async function extractAudio() {
+            const outputFormat = document.getElementById('audioFormat').value;
+            const targetSampleRate = parseInt(document.getElementById('sampleRate').value);
+            const mp3Bitrate = parseInt(document.getElementById('mp3Bitrate').value);
+            let sourceBlob = null, sourceName = '';
+            const isSession = !document.getElementById('sourceSession').classList.contains('hidden');
+            if (isSession) {
+                const idx = document.getElementById('recordingSelect').value;
+                if (idx === '' || !captures[parseInt(idx)]) { showModal('Please select a recording first.'); return; }
+                const cap = captures[parseInt(idx)];
+                sourceBlob = cap.blob; sourceName = cap.name;
+            } else {
+                if (!uploadedFile) { showModal('Please upload a video file first.'); return; }
+                sourceBlob = uploadedFile; sourceName = uploadedFile.name;
+            }
+            const progressEl = document.getElementById('extractProgress');
+            const progressBar = document.getElementById('progressBar');
+            const statusEl = document.getElementById('extractStatus');
+            const resultEl = document.getElementById('extractResult');
+            const btnExtract = document.getElementById('btnExtract');
+            progressEl.classList.remove('hidden'); resultEl.classList.add('hidden');
+            progressBar.style.width = '0%'; statusEl.textContent = 'Reading file...';
+            btnExtract.disabled = true; btnExtract.classList.add('opacity-50');
+            try {
+                progressBar.style.width = '10%';
+                const arrayBuffer = await sourceBlob.arrayBuffer();
+                statusEl.textContent = 'Decoding audio...'; progressBar.style.width = '25%';
+                let audioBuffer;
+                try { const ctx = new AudioContext(); audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0)); ctx.close(); }
+                catch (e) { statusEl.textContent = 'Fallback decode...'; audioBuffer = await fallbackDecode(sourceBlob); }
+                if (!audioBuffer) throw new Error('Could not decode audio.');
+                if (audioBuffer.sampleRate !== targetSampleRate) {
+                    statusEl.textContent = 'Resampling to ' + targetSampleRate + ' Hz...'; progressBar.style.width = '45%';
+                    audioBuffer = await resampleBuffer(audioBuffer, targetSampleRate);
+                }
+                progressBar.style.width = '55%'; statusEl.textContent = 'Encoding to ' + outputFormat.toUpperCase() + '...';
+                let outputBlob, outputExt;
+                if (outputFormat === 'wav') { outputBlob = encodeWav(audioBuffer); outputExt = 'wav'; }
+                else if (outputFormat === 'mp3') { if (typeof lamejs === 'undefined') throw new Error('MP3 encoder not loaded.'); outputBlob = encodeMp3(audioBuffer, mp3Bitrate); outputExt = 'mp3'; }
+                else { outputBlob = await encodeWebmAudio(audioBuffer); outputExt = 'webm'; }
+                progressBar.style.width = '85%'; statusEl.textContent = 'Generating waveform...';
+                drawWaveform(audioBuffer);
+                const url = URL.createObjectURL(outputBlob);
+                document.getElementById('audioPreview').src = url;
+                currentExtractedBlob = outputBlob; currentExtractedFormat = outputExt;
+                currentExtractedName = sourceName.replace(/\.[^.]+$/, '') + '.' + outputExt;
+                extractionItems.push({ id: Date.now(), name: currentExtractedName, blob: outputBlob, url, format: outputFormat.toUpperCase(), channels: audioBuffer.numberOfChannels, sampleRate: audioBuffer.sampleRate, duration: audioBuffer.duration, size: outputBlob.size });
+                renderExtractionHistory();
+                progressBar.style.width = '100%';
+                statusEl.textContent = 'Complete! ' + formatSize(outputBlob.size) + ' · ' + formatDuration(audioBuffer.duration);
+                resultEl.classList.remove('hidden');
+            } catch (err) { statusEl.textContent = 'Error: ' + err.message; progressBar.style.width = '0%'; }
+            finally { btnExtract.disabled = false; btnExtract.classList.remove('opacity-50'); }
+        }
+
+        async function resampleBuffer(buf, rate) {
+            const frames = Math.ceil(buf.duration * rate);
+            const ctx = new OfflineAudioContext(buf.numberOfChannels, frames, rate);
+            const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination); src.start(0);
+            return await ctx.startRendering();
+        }
+
+        async function fallbackDecode(blob) {
+            return new Promise((resolve, reject) => {
+                const video = document.createElement('video');
+                const url = URL.createObjectURL(blob);
+                video.src = url; video.crossOrigin = 'anonymous'; video.preload = 'auto';
+                video.onloadedmetadata = async () => {
+                    try {
+                        const ctx = new AudioContext(); const source = ctx.createMediaElementSource(video);
+                        const dest = ctx.createMediaStreamDestination(); source.connect(dest);
+                        const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+                        const recorder = new MediaRecorder(dest.stream, { mimeType: mime }); const chunks = [];
+                        recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+                        recorder.onstop = async () => {
+                            const b = new Blob(chunks, { type: 'audio/webm' });
+                            try { const buf = await b.arrayBuffer(); const d = await ctx.decodeAudioData(buf); ctx.close(); URL.revokeObjectURL(url); resolve(d); }
+                            catch (e) { URL.revokeObjectURL(url); reject(e); }
+                        };
+                        recorder.start(); video.muted = false; await video.play();
+                        video.onended = () => recorder.stop();
+                        setTimeout(() => { if (recorder.state === 'recording') { video.pause(); recorder.stop(); } }, (video.duration + 3) * 1000);
+                    } catch (e) { URL.revokeObjectURL(url); reject(e); }
+                };
+                video.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not load video.')); };
+            });
+        }
+
+        function encodeWav(buf) {
+            const numCh = buf.numberOfChannels, rate = buf.sampleRate, bps = 16;
+            const blockAlign = numCh * (bps / 8), numFrames = buf.length, dataSize = numFrames * blockAlign;
+            const ab = new ArrayBuffer(44 + dataSize); const v = new DataView(ab);
+            const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+            w(0, 'RIFF'); v.setUint32(4, 36 + dataSize, true); w(8, 'WAVE'); w(12, 'fmt ');
+            v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, numCh, true);
+            v.setUint32(24, rate, true); v.setUint32(28, rate * blockAlign, true);
+            v.setUint16(32, blockAlign, true); v.setUint16(34, bps, true); w(36, 'data'); v.setUint32(40, dataSize, true);
+            const channels = []; for (let c = 0; c < numCh; c++) channels.push(buf.getChannelData(c));
+            let off = 44;
+            for (let i = 0; i < numFrames; i++) {
+                for (let c = 0; c < numCh; c++) {
+                    const s = Math.max(-1, Math.min(1, channels[c][i]));
+                    v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true); off += 2;
+                }
+            }
+            return new Blob([ab], { type: 'audio/wav' });
+        }
+
+        function encodeMp3(buf, bitrate) {
+            const numCh = buf.numberOfChannels, rate = buf.sampleRate, mp3Data = [], bs = 1152;
+            if (numCh === 1) {
+                const enc = new lamejs.Mp3Encoder(1, rate, bitrate);
+                const samples = f32toI16(buf.getChannelData(0));
+                for (let i = 0; i < samples.length; i += bs) { const c = samples.subarray(i, Math.min(i + bs, samples.length)); const o = enc.encodeBuffer(c); if (o.length > 0) mp3Data.push(o); }
+                const e = enc.flush(); if (e.length > 0) mp3Data.push(e);
+            } else {
+                const enc = new lamejs.Mp3Encoder(2, rate, bitrate);
+                const left = f32toI16(buf.getChannelData(0)), right = f32toI16(buf.getChannelData(1));
+                for (let i = 0; i < left.length; i += bs) { const lc = left.subarray(i, Math.min(i + bs, left.length)); const rc = right.subarray(i, Math.min(i + bs, right.length)); const o = enc.encodeBuffer(lc, rc); if (o.length > 0) mp3Data.push(o); }
+                const e = enc.flush(); if (e.length > 0) mp3Data.push(e);
+            }
+            return new Blob(mp3Data, { type: 'audio/mp3' });
+        }
+
+        function f32toI16(f) { const r = new Int16Array(f.length); for (let i = 0; i < f.length; i++) { const s = Math.max(-1, Math.min(1, f[i])); r[i] = s < 0 ? s * 0x8000 : s * 0x7FFF; } return r; }
+
+        async function encodeWebmAudio(buf) {
+            return new Promise((resolve, reject) => {
+                try {
+                    const ctx = new AudioContext({ sampleRate: buf.sampleRate }); const src = ctx.createBufferSource(); src.buffer = buf;
+                    const dest = ctx.createMediaStreamDestination(); src.connect(dest);
+                    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+                    const rec = new MediaRecorder(dest.stream, { mimeType: mime }); const chunks = [];
+                    rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+                    rec.onstop = () => { ctx.close(); resolve(new Blob(chunks, { type: 'audio/webm' })); };
+                    rec.onerror = e => { ctx.close(); reject(e.error || new Error('WebM encoding failed')); };
+                    rec.start(); src.start(0); src.onended = () => setTimeout(() => rec.stop(), 150);
+                } catch (e) { reject(e); }
+            });
+        }
+
+        function drawWaveform(buf) {
+            const canvas = document.getElementById('waveformCanvas'); const ctx = canvas.getContext('2d');
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = canvas.offsetWidth * dpr; canvas.height = canvas.offsetHeight * dpr;
+            ctx.scale(dpr, dpr);
+            const w = canvas.offsetWidth, h = canvas.offsetHeight;
+            ctx.fillStyle = '#111827'; ctx.fillRect(0, 0, w, h);
+            const data = buf.getChannelData(0); const step = Math.ceil(data.length / w); const mid = h / 2;
+            ctx.strokeStyle = '#374151'; ctx.lineWidth = 0.5; ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid); ctx.stroke();
+            ctx.strokeStyle = '#8b5cf6'; ctx.lineWidth = 1; ctx.beginPath();
+            for (let i = 0; i < w; i++) {
+                let min = 1, max = -1;
+                for (let j = 0; j < step; j++) { const idx = i * step + j; if (idx < data.length) { if (data[idx] < min) min = data[idx]; if (data[idx] > max) max = data[idx]; } }
+                ctx.moveTo(i, (1 + min) * mid); ctx.lineTo(i, (1 + max) * mid);
+            }
+            ctx.stroke();
+        }
+
+        // ======================== CAPTURES ========================
+        function addCapture(type, blob, ext) {
+            const ts = new Date();
+            const name = `capture_${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.${ext}`;
+            captures.push({ id: Date.now(), type, blob, url: URL.createObjectURL(blob), ext, name, timestamp: ts });
+            renderCaptures(); updateRecordingSelect();
+        }
+
+        function renderCaptures() {
+            const grid = document.getElementById('capturesGrid');
+            document.getElementById('captureCount').textContent = captures.length;
+            if (captures.length === 0) { grid.innerHTML = '<p class="text-gray-400 text-sm col-span-full text-center py-8">No captures yet.</p>'; return; }
+            grid.innerHTML = '';
+            captures.forEach((cap, idx) => {
+                const card = document.createElement('div');
+                card.className = 'border rounded-lg overflow-hidden bg-gray-50 hover:shadow-md transition';
+                const preview = cap.type === 'screenshot'
+                    ? `<img src="${cap.url}" class="w-full h-40 object-cover bg-gray-200">`
+                    : `<video src="${cap.url}" class="w-full h-40 object-cover bg-black" muted preload="metadata" onloadeddata="this.currentTime=1"></video>`;
+                const badge = cap.type === 'video'
+                    ? `<span class="inline-block px-1.5 py-0.5 text-xs font-bold rounded ${cap.ext === 'mp4' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}">${cap.ext.toUpperCase()}</span>`
+                    : '<span class="inline-block px-1.5 py-0.5 text-xs font-bold rounded bg-gray-200 text-gray-600">PNG</span>';
+                card.innerHTML = `${preview}<div class="p-3 space-y-2"><p class="text-xs font-mono text-gray-600 truncate" title="${cap.name}">${cap.name}</p><div class="flex items-center gap-2">${badge}<span class="text-xs text-gray-400">${formatSize(cap.blob.size)}</span></div><div class="flex gap-2"><button onclick="downloadCapture(${idx})" class="px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600 transition">⬇ Download</button>${cap.type === 'video' ? `<button onclick="quickExtract(${idx})" class="px-2 py-1 bg-purple-500 text-white rounded text-xs hover:bg-purple-600 transition">🎵 Audio</button>` : ''}<button onclick="deleteCapture(${idx})" class="px-2 py-1 bg-red-500 text-white rounded text-xs hover:bg-red-600 transition">🗑</button></div></div>`;
+                grid.appendChild(card);
+            });
+        }
+
+        function updateRecordingSelect() {
+            const select = document.getElementById('recordingSelect');
+            const videos = captures.filter(c => c.type === 'video');
+            if (videos.length === 0) { select.innerHTML = '<option value="">-- No recordings yet --</option>'; return; }
+            select.innerHTML = '';
+            captures.forEach((cap, idx) => {
+                if (cap.type === 'video') {
+                    const opt = document.createElement('option');
+                    opt.value = idx; opt.textContent = cap.name + ' (' + formatSize(cap.blob.size) + ')';
+                    select.appendChild(opt);
+                }
+            });
+        }
+
+        function downloadCapture(idx) { downloadBlob(captures[idx].blob, captures[idx].name); }
+        function deleteCapture(idx) { URL.revokeObjectURL(captures[idx].url); captures.splice(idx, 1); renderCaptures(); updateRecordingSelect(); }
+        function downloadAll() { if (captures.length === 0) { showModal('No captures.'); return; } captures.forEach(cap => downloadBlob(cap.blob, cap.name)); }
+        function clearAll() { if (captures.length === 0) return; captures.forEach(cap => URL.revokeObjectURL(cap.url)); captures = []; renderCaptures(); updateRecordingSelect(); }
+
+        function quickExtract(idx) {
+            document.getElementById('recordingSelect').value = idx;
+            document.getElementById('audioFormat').value = 'wav';
+            document.getElementById('sampleRate').value = '48000';
+            document.getElementById('mp3BitrateContainer').classList.add('hidden');
+            switchExtractTab('session');
+            document.getElementById('btnExtract').scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(() => extractAudio(), 400);
+        }
+
+        function downloadExtractedAudio() { if (currentExtractedBlob) downloadBlob(currentExtractedBlob, currentExtractedName); }
+
+        function renderExtractionHistory() {
+            const section = document.getElementById('extractionHistory');
+            const list = document.getElementById('extractionList');
+            if (extractionItems.length === 0) { section.classList.add('hidden'); return; }
+            section.classList.remove('hidden'); list.innerHTML = '';
+            extractionItems.forEach((item, idx) => {
+                const color = item.format === 'MP3' ? 'bg-orange-100 text-orange-700' : item.format === 'WAV' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700';
+                const div = document.createElement('div');
+                div.className = 'flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-gray-50 rounded-lg';
+                div.innerHTML = `<div class="flex-1 min-w-0"><p class="text-sm font-medium truncate" title="${item.name}">${item.name}</p><div class="flex flex-wrap items-center gap-2 mt-1"><span class="inline-block px-1.5 py-0.5 text-xs font-bold rounded ${color}">${item.format}</span><span class="text-xs text-gray-400">${item.channels}ch · ${item.sampleRate} Hz · ${formatDuration(item.duration)} · ${formatSize(item.size)}</span></div></div><div class="flex items-center gap-2 shrink-0"><audio src="${item.url}" controls class="h-8" style="max-width: 200px;"></audio><button onclick="downloadBlob(extractionItems[${idx}].blob, extractionItems[${idx}].name)" class="px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600 transition">⬇</button><button onclick="deleteExtraction(${idx})" class="px-2 py-1 bg-red-500 text-white rounded text-xs hover:bg-red-600 transition">🗑</button></div>`;
+                list.appendChild(div);
+            });
+        }
+
+        function deleteExtraction(idx) { URL.revokeObjectURL(extractionItems[idx].url); extractionItems.splice(idx, 1); renderExtractionHistory(); }
+
+        // ======================== UTILITIES ========================
+        function downloadBlob(blob, filename) {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob); a.download = filename;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        }
+
+        function formatTime(sec) {
+            const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+            return pad(h) + ':' + pad(m) + ':' + pad(s);
+        }
+
+        function pad(n) { return n.toString().padStart(2, '0'); }
+        function formatSize(b) { if (b < 1024) return b + ' B'; if (b < 1048576) return (b / 1024).toFixed(1) + ' KB'; if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB'; return (b / 1073741824).toFixed(2) + ' GB'; }
+        function formatDuration(s) { const m = Math.floor(s / 60), sec = Math.floor(s % 60); return m + ':' + pad(sec); }
+        function showModal(msg) { document.getElementById('modalMessage').textContent = msg; document.getElementById('modal').classList.remove('hidden'); }
+        function closeModal() { document.getElementById('modal').classList.add('hidden'); }
+    </script>
+</body>
+</html>
